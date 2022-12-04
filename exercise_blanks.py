@@ -9,6 +9,8 @@ import operator
 import data_loader
 import pickle
 import tqdm
+import matplotlib.pyplot as plt
+from itertools import islice
 
 # ------------------------------------------- Constants ----------------------------------------
 
@@ -22,6 +24,11 @@ W2V_SEQUENCE = "w2v_sequence"
 TRAIN = "train"
 VAL = "val"
 TEST = "test"
+
+BATCH_SIZE = 64
+N_EPOCHS = 10
+LEARNING_RATE = 0.01
+WEIGHT_DECAY = 0.0001
 
 
 # ------------------------------------------ Helper methods and classes --------------------------
@@ -115,7 +122,7 @@ def get_w2v_average(sent, word_to_vec, embedding_dim):
     :param embedding_dim: the dimension of the word embedding vectors
     :return The average embedding vector as numpy ndarray.
     """
-    return
+    return torch.asarray([word_to_vec.get(word, torch.zeros(size=embedding_dim)) for word in sent.text]).mean(dim=0)
 
 
 def get_one_hot(size, ind):
@@ -125,7 +132,9 @@ def get_one_hot(size, ind):
     :param ind: the entry index to turn to 1
     :return: numpy ndarray which represents the one-hot vector
     """
-    return
+    one_hot_vec = np.zeros(shape=size)
+    one_hot_vec[ind] = 1
+    return one_hot_vec
 
 
 def average_one_hots(sent, word_to_ind):
@@ -136,7 +145,8 @@ def average_one_hots(sent, word_to_ind):
     :param word_to_ind: a mapping between words to indices
     :return:
     """
-    return
+    n = len(word_to_ind)
+    return np.asarray([get_one_hot(n, word_to_ind[word]) for word in sent.text]).mean(axis=0)
 
 
 def get_word_to_ind(words_list):
@@ -146,7 +156,7 @@ def get_word_to_ind(words_list):
     :param words_list: a list of words
     :return: the dictionary mapping words to the index
     """
-    return
+    return {word: i for i, word in enumerate(words_list)}
 
 
 def sentence_to_embedding(sent, word_to_vec, seq_len, embedding_dim=300):
@@ -193,7 +203,8 @@ class DataManager():
     evaluation.
     """
 
-    def __init__(self, data_type=ONEHOT_AVERAGE, use_sub_phrases=True, dataset_path="stanfordSentimentTreebank", batch_size=50,
+    def __init__(self, data_type=ONEHOT_AVERAGE, use_sub_phrases=True, dataset_path="stanfordSentimentTreebank",
+                 batch_size=50,
                  embedding_dim=None):
         """
         builds the data manager used for training and evaluation.
@@ -264,14 +275,13 @@ class DataManager():
         return self.torch_datasets[TRAIN][0][0].shape
 
 
-
-
 # ------------------------------------ Models ----------------------------------------------------
 
 class LSTM(nn.Module):
     """
     An LSTM for sentiment analysis with architecture as described in the exercise description.
     """
+
     def __init__(self, embedding_dim, hidden_dim, n_layers, dropout):
         return
 
@@ -286,20 +296,23 @@ class LogLinear(nn.Module):
     """
     general class for the log-linear models for sentiment analysis.
     """
+
     def __init__(self, embedding_dim):
-        return
+        super(LogLinear, self).__init__()
+        self.linear = torch.nn.Linear(embedding_dim, 1)
+        self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x):
-        return
+        return self.linear(x)
 
     def predict(self, x):
-        return
+        return self.sigmoid(self.forward(x))
 
 
 # ------------------------- training functions -------------
 
 
-def binary_accuracy(preds, y):
+def binary_accuracy(preds, y, normalized=True):
     """
     This method returns tha accuracy of the predictions, relative to the labels.
     You can choose whether to use numpy arrays or tensors here.
@@ -307,8 +320,7 @@ def binary_accuracy(preds, y):
     :param y: a vector of true labels
     :return: scalar value - (<number of accurate predictions> / <number of examples>)
     """
-
-    return
+    return int(torch.sum(torch.round(preds) == y)) / (y.shape[0] if normalized else 1)
 
 
 def train_epoch(model, data_iterator, optimizer, criterion):
@@ -320,8 +332,30 @@ def train_epoch(model, data_iterator, optimizer, criterion):
     :param optimizer: the optimizer object for the training process.
     :param criterion: the criterion object for the training process.
     """
+    # init
+    model.train()
+    batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
+    samples_num = batches_num * data_iterator.batch_size
 
-    return
+    train_loss, train_correct = 0, 0
+
+    for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
+        optimizer.zero_grad()  # TODO why??
+
+        model_outputs = model(inputs.type(torch.FloatTensor))
+        predicted_labels = model.predict(inputs.type(torch.FloatTensor))
+        true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)  # TODO check for reshape
+
+        loss = criterion(model_outputs, true_labels)
+        loss.backward()
+        optimizer.step()
+
+        train_loss += float(loss)
+        train_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+
+        # TODO add printing for debuging
+
+    return train_loss / samples_num, train_correct / samples_num
 
 
 def evaluate(model, data_iterator, criterion):
@@ -332,23 +366,27 @@ def evaluate(model, data_iterator, criterion):
     :param criterion: the loss criterion used for evaluation
     :return: tuple of (average loss over all examples, average accuracy over all examples)
     """
-    return
+    # init
+    model.eval()
+    batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
+    samples_num = batches_num * data_iterator.batch_size
+
+    validate_loss, validate_correct = 0, 0
+
+    with torch.no_grad():  # reduce memory consumption
+        for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
+            model_outputs = model(inputs.type(torch.FloatTensor))
+            predicted_labels = model.predict(inputs.type(torch.FloatTensor))
+            true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor) # TODO check for reshape
+
+            loss = criterion(model_outputs, true_labels)
+            validate_loss += float(loss)
+            validate_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+
+    return validate_loss / samples_num, validate_correct / samples_num
 
 
-def get_predictions_for_data(model, data_iter):
-    """
-
-    This function should iterate over all batches of examples from data_iter and return all of the models
-    predictions as a numpy ndarray or torch tensor (or list if you prefer). the prediction should be in the
-    same order of the examples returned by data_iter.
-    :param model: one of the models you implemented in the exercise
-    :param data_iter: torch iterator as given by the DataManager
-    :return:
-    """
-    return
-
-
-def train_model(model, data_manager, n_epochs, lr, weight_decay=0.):
+def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
     """
     Runs the full training procedure for the given model. The optimization should be done using the Adam
     optimizer with all parameters but learning rate and weight decay set to default.
@@ -358,14 +396,104 @@ def train_model(model, data_manager, n_epochs, lr, weight_decay=0.):
     :param lr: learning rate to be used for optimization
     :param weight_decay: parameter for l2 regularization
     """
-    return
+
+    train_iterator = data_manager.get_torch_iterator(TRAIN)
+    validation_iterator = data_manager.get_torch_iterator(VAL)
+
+    optimizer = optim.Adam(params=model.parameters(),
+                           lr=lr,
+                           weight_decay=weight_decay)
+
+    t_loss, t_acc, v_loss, v_acc = [], [], [], []
+
+    for epoch in range(n_epochs):
+        print(f"# --------- Starting epoch {epoch}/{n_epochs} --------- #")
+
+        loss, accuracy = train_epoch(model, train_iterator, optimizer, criterion)
+        t_loss.append(loss), t_acc.append(accuracy)
+
+        loss, accuracy = evaluate(model, validation_iterator, criterion)
+        v_loss.append(loss), v_acc.append(accuracy)
+
+    return {"training_loss": (t_loss, 0, "g"), "training_accuracy": (t_acc, 1, "g"),
+            "validation_loss": (v_loss, 0, "b"), "validation_accuracy": (v_acc, 1, "b")}
+
+
+def get_prediction_for_data(model, data_iterator, criterion):
+    """
+    This function should iterate over all batches of examples from data_iter and return all of the models
+    predictions as a numpy ndarray or torch tensor (or list if you prefer). the prediction should be in the
+    same order of the examples returned by data_iter.
+    :param model: one of the models you implemented in the exercise
+    :param data_iterator: torch iterator as given by the DataManager
+    :return:
+    """
+    model.eval()
+    batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
+
+    test_true, test_predictions = [], []
+    test_loss, test_correct = 0, 0
+
+    with torch.no_grad():  # reduce memory consumption
+        for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
+            model_outputs = model(inputs.type(torch.FloatTensor))
+            predicted_labels = model.predict(inputs.type(torch.FloatTensor))
+            true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor) # TODO check for reshape
+
+            test_true.append(true_labels), test_predictions.append(predicted_labels)
+
+            test_loss += float(criterion(model_outputs, true_labels))
+            test_correct += binary_accuracy(predicted_labels, true_labels)
+
+    return torch.cat(test_predictions), torch.cat(test_true), test_loss, test_correct
+
+def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay, criterion):
+
+    training_metrics_dict = train_model(model,
+                                        data_manager,
+                                        criterion,
+                                        n_epochs,
+                                        lr,
+                                        weight_decay)
+
+    fig, axes = plt.subplots(1, 2)
+    for metric_name, (metric, plot_idx, graph_color) in training_metrics_dict.items():
+        axes[plot_idx].plot(range(n_epochs), metric, graph_color, label=metric_name)
+        axes[plot_idx].set_ylabel(metric_name.split("_")[1])
+    axes.set_ylim(0, 1)
+    axes.xlabel("Epochs")
+    plt.legend()
+    plt.show()
+
+    # predictions for the whole data
+    test_iterator = data_manager.get_torch_iterator(TEST)
+    test_predictions, test_true, test_loss, test_accuracy = get_prediction_for_data(model, test_iterator, criterion)
+    print(f"Test loss: {np.round(test_loss, 3)} accuracy: {np.round(test_accuracy, 3)} over entire dataset")
+
+    # negated polarity examples
+    indices = data_loader.get_negated_polarity_examples(data_manager.sentences[TEST])
+    accuracy = binary_accuracy(preds=test_predictions[indices], y=test_true[indices])
+    print(f"Test accuracy: {np.round(accuracy, 3)} over negated polarity examples")
+
+    # rare_words examples
+    indices = data_loader.get_rare_words_examples(data_manager.sentences[TEST], data_manager.sentiment_dataset)
+    accuracy = binary_accuracy(preds=test_predictions[indices], y=test_true[indices])
+    print(f"Test accuracy: {np.round(accuracy, 3)} over rare words examples")
+
 
 
 def train_log_linear_with_one_hot():
     """
     Here comes your code for training and evaluation of the log linear model with one hot representation.
     """
-    return
+    data_manager = DataManager(ONEHOT_AVERAGE, batch_size=BATCH_SIZE)
+    model = LogLinear(embedding_dim=data_manager.get_input_shape()[0])
+    train_eval_plot(model,
+                    data_manager,
+                    N_EPOCHS,
+                    LEARNING_RATE,
+                    WEIGHT_DECAY,
+                    criterion=nn.BCEWithLogitsLoss())
 
 
 def train_log_linear_with_w2v():
