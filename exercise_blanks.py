@@ -169,7 +169,14 @@ def sentence_to_embedding(sent, word_to_vec, seq_len, embedding_dim=300):
     :param embedding_dim: the dimension of the w2v embedding
     :return: numpy ndarray of shape (seq_len, embedding_dim) with the representation of the sentence
     """
-    return
+    words_vectors = []
+    for i in range(seq_len):
+        if i >= len(sent.text) or sent.text[i] not in word_to_vec:
+            words_vectors.append(torch.zeros(size=embedding_dim))
+        else:
+            words_vectors.append(word_to_vec[sent.text[i]])
+
+    return torch.asarray(words_vectors).mean(dim=0)
 
 
 class OnlineDataset(Dataset):
@@ -283,13 +290,21 @@ class LSTM(nn.Module):
     """
 
     def __init__(self, embedding_dim, hidden_dim, n_layers, dropout):
-        return
+        super(LSTM, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.dropout = dropout
+        self.batch_size = BATCH_SIZE
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, n_layers, batch_first=True, bidirectional=True, dropout=dropout)
+        self.linear_layer = nn.Linear(hidden_dim * 2, 1)
+        self.sigmoid = nn.Sigmoid()
+        # TODO understand why?
 
     def forward(self, text):
-        return
+        lstm_out, _ = self.lstm(text)
+        return self.linear_layer(lstm_out[:, -1, :])
 
     def predict(self, text):
-        return
+        return self.sigmoid(self.forward(text))
 
 
 class LogLinear(nn.Module):
@@ -310,8 +325,6 @@ class LogLinear(nn.Module):
 
 
 # ------------------------- training functions -------------
-
-
 def binary_accuracy(preds, y, normalized=True):
     """
     This method returns tha accuracy of the predictions, relative to the labels.
@@ -340,7 +353,7 @@ def train_epoch(model, data_iterator, optimizer, criterion):
     train_loss, train_correct = 0, 0
 
     for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
-        optimizer.zero_grad()  # TODO why??
+        optimizer.zero_grad()
 
         model_outputs = model(inputs.type(torch.FloatTensor))
         predicted_labels = model.predict(inputs.type(torch.FloatTensor))
@@ -352,8 +365,6 @@ def train_epoch(model, data_iterator, optimizer, criterion):
 
         train_loss += float(loss)
         train_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
-
-        # TODO add printing for debuging
 
     return train_loss / samples_num, train_correct / samples_num
 
@@ -415,8 +426,7 @@ def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
         loss, accuracy = evaluate(model, validation_iterator, criterion)
         v_loss.append(loss), v_acc.append(accuracy)
 
-    return {"training_loss": (t_loss, 0, "g"), "training_accuracy": (t_acc, 1, "g"),
-            "validation_loss": (v_loss, 0, "b"), "validation_accuracy": (v_acc, 1, "b")}
+    return {"loss": {"training": t_loss, "validation": v_loss}, "accuracy": {"training": t_acc, "validation": v_acc}}
 
 
 def get_prediction_for_data(model, data_iterator, criterion):
@@ -430,6 +440,7 @@ def get_prediction_for_data(model, data_iterator, criterion):
     """
     model.eval()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
+    samples_num = batches_num * data_iterator.batch_size
 
     test_true, test_predictions = [], []
     test_loss, test_correct = 0, 0
@@ -443,43 +454,45 @@ def get_prediction_for_data(model, data_iterator, criterion):
             test_true.append(true_labels), test_predictions.append(predicted_labels)
 
             test_loss += float(criterion(model_outputs, true_labels))
-            test_correct += binary_accuracy(predicted_labels, true_labels)
+            test_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
 
-    return torch.cat(test_predictions), torch.cat(test_true), test_loss, test_correct
+    return torch.cat(test_predictions), torch.cat(test_true), test_loss / samples_num, test_correct / samples_num
 
-def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay, criterion):
 
-    training_metrics_dict = train_model(model,
-                                        data_manager,
-                                        criterion,
-                                        n_epochs,
-                                        lr,
-                                        weight_decay)
+def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay):
+    criterion = nn.BCEWithLogitsLoss()
 
-    fig, axes = plt.subplots(1, 2)
-    for metric_name, (metric, plot_idx, graph_color) in training_metrics_dict.items():
-        axes[plot_idx].plot(range(n_epochs), metric, graph_color, label=metric_name)
-        axes[plot_idx].set_ylabel(metric_name.split("_")[1])
-    axes.set_ylim(0, 1)
-    axes.xlabel("Epochs")
-    plt.legend()
-    plt.show()
+    # training
+    performances = train_model(model,
+                               data_manager,
+                               criterion,
+                               n_epochs,
+                               lr,
+                               weight_decay)
+    epochs = range(n_epochs)
+    for metric_type, dataset_type_dict in performances.items():
+        for dataset_type, values in dataset_type_dict.items():
+            plt.plot(epochs, values, label=dataset_type)
+        plt.title(f'{metric_type} over training/validation')
+        plt.xlabel('Epochs')
+        plt.ylabel(metric_type)
+        plt.legend()
+        plt.show()
 
     # predictions for the whole data
     test_iterator = data_manager.get_torch_iterator(TEST)
     test_predictions, test_true, test_loss, test_accuracy = get_prediction_for_data(model, test_iterator, criterion)
     print(f"Test loss: {np.round(test_loss, 3)} accuracy: {np.round(test_accuracy, 3)} over entire dataset")
 
-    # negated polarity examples
+    # test accuracy over negated polarity examples
     indices = data_loader.get_negated_polarity_examples(data_manager.sentences[TEST])
     accuracy = binary_accuracy(preds=test_predictions[indices], y=test_true[indices])
     print(f"Test accuracy: {np.round(accuracy, 3)} over negated polarity examples")
 
-    # rare_words examples
+    # test accuracy over rare_words examples
     indices = data_loader.get_rare_words_examples(data_manager.sentences[TEST], data_manager.sentiment_dataset)
     accuracy = binary_accuracy(preds=test_predictions[indices], y=test_true[indices])
     print(f"Test accuracy: {np.round(accuracy, 3)} over rare words examples")
-
 
 
 def train_log_linear_with_one_hot():
@@ -492,8 +505,8 @@ def train_log_linear_with_one_hot():
                     data_manager,
                     N_EPOCHS,
                     LEARNING_RATE,
-                    WEIGHT_DECAY,
-                    criterion=nn.BCEWithLogitsLoss())
+                    WEIGHT_DECAY
+                    )
 
 
 def train_log_linear_with_w2v():
@@ -501,14 +514,28 @@ def train_log_linear_with_w2v():
     Here comes your code for training and evaluation of the log linear model with word embeddings
     representation.
     """
-    return
+    data_manager = DataManager(W2V_AVERAGE, batch_size=BATCH_SIZE, embedding_dim=W2V_EMBEDDING_DIM)
+    model = LogLinear(embedding_dim=W2V_EMBEDDING_DIM)
+    train_eval_plot(model,
+                    data_manager,
+                    N_EPOCHS,
+                    LEARNING_RATE,
+                    WEIGHT_DECAY
+                    )
 
 
 def train_lstm_with_w2v():
     """
     Here comes your code for training and evaluation of the LSTM model.
     """
-    return
+    data_manager = DataManager(W2V_SEQUENCE, batch_size=BATCH_SIZE, embedding_dim=W2V_EMBEDDING_DIM)
+    model = LSTM(embedding_dim=W2V_EMBEDDING_DIM, hidden_dim=100, n_layers=1, dropout=.5)
+    train_eval_plot(model,
+                    data_manager,
+                    n_epochs=4,
+                    lr=0.001,
+                    weight_decay=0.0001
+                    )
 
 
 if __name__ == '__main__':
