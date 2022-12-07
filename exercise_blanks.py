@@ -288,16 +288,19 @@ class LSTM(nn.Module):
 
     def __init__(self, embedding_dim, hidden_dim, n_layers, dropout):
         super(LSTM, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.dropout = dropout
-        self.batch_size = BATCH_SIZE
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, n_layers, batch_first=True, bidirectional=True, dropout=dropout)
+        self.lstm = nn.LSTM(embedding_dim,
+                            hidden_dim,
+                            n_layers,
+                            batch_first=True,
+                            bidirectional=True,
+                            dropout=dropout)
         self.linear_layer = nn.Linear(hidden_dim * 2, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, text):
-        lstm_out, _ = self.lstm(text)
-        return self.linear_layer(lstm_out[:, -1, :])
+        lstm_out, (hn, cn) = self.lstm(text)
+        hh = torch.hstack((hn[0], hn[1]))
+        return self.linear_layer(hh)
 
     def predict(self, text):
         return self.sigmoid(self.forward(text))
@@ -310,27 +313,26 @@ class LogLinear(nn.Module):
 
     def __init__(self, embedding_dim):
         super(LogLinear, self).__init__()
-        self.linear = nn.Linear(embedding_dim, 1)
+        self.linear_layer = nn.Linear(embedding_dim, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        return self.linear(x)
+        return self.linear_layer(x)
 
     def predict(self, x):
         return self.sigmoid(self.forward(x))
 
 
 # ------------------------- training functions -------------
-def binary_accuracy(preds, y, normalized=True):
+def binary_accuracy(preds, y):
     """
     This method returns tha accuracy of the predictions, relative to the labels.
     You can choose whether to use numpy arrays or tensors here.
     :param preds: a vector of predictions
     :param y: a vector of true labels
-    :param normalized: if true return accuracy normalized
     :return: scalar value - (<number of accurate predictions> / <number of examples>)
     """
-    return int(torch.sum(torch.round(preds) == y)) / (y.shape[0] if normalized else 1)
+    return int(torch.sum(torch.round(preds) == y)) / y.shape[0]
 
 
 def train_epoch(model, data_iterator, optimizer, criterion):
@@ -344,7 +346,6 @@ def train_epoch(model, data_iterator, optimizer, criterion):
     """
     model.train()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
-    samples_num = batches_num * data_iterator.batch_size
 
     train_loss, train_correct = 0, 0
 
@@ -355,18 +356,18 @@ def train_epoch(model, data_iterator, optimizer, criterion):
         predicted_labels = model.predict(inputs.type(torch.FloatTensor))
         true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)
 
-        loss = criterion(model_outputs, true_labels) * data_iterator.batch_size
+        loss = criterion(model_outputs, true_labels)
         loss.backward()
         optimizer.step()
 
         train_loss += float(loss)
-        train_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+        train_correct += binary_accuracy(predicted_labels, true_labels)
 
-    return train_loss / samples_num, train_correct / samples_num
+    return train_loss / batches_num, train_correct / batches_num
 
 
 @torch.no_grad()
-def evaluate(model, data_iterator, criterion):
+def evaluate_epoch(model, data_iterator, criterion):
     """
     evaluate the model performance on the given data
     :param model: one of our models.
@@ -376,7 +377,6 @@ def evaluate(model, data_iterator, criterion):
     """
     model.eval()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
-    samples_num = batches_num * data_iterator.batch_size
 
     validate_loss, validate_correct = 0, 0
 
@@ -385,14 +385,14 @@ def evaluate(model, data_iterator, criterion):
         predicted_labels = model.predict(inputs.type(torch.FloatTensor))
         true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)
 
-        loss = criterion(model_outputs, true_labels) * data_iterator.batch_size
+        loss = criterion(model_outputs, true_labels)
         validate_loss += float(loss)
-        validate_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+        validate_correct += binary_accuracy(predicted_labels, true_labels)
 
-    return validate_loss / samples_num, validate_correct / samples_num
+    return validate_loss / batches_num, validate_correct / batches_num
 
 
-def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
+def train_eval_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
     """
     Runs the full training procedure for the given model. The optimization should be done using the Adam
     optimizer with all parameters but learning rate and weight decay set to default
@@ -419,7 +419,7 @@ def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
         loss, accuracy = train_epoch(model, train_iterator, optimizer, criterion)
         t_loss.append(loss), t_acc.append(accuracy)
 
-        loss, accuracy = evaluate(model, validation_iterator, criterion)
+        loss, accuracy = evaluate_epoch(model, validation_iterator, criterion)
         v_loss.append(loss), v_acc.append(accuracy)
 
     print(f"# --------- Finished {n_epochs}/{n_epochs} epochs! --------- #")
@@ -440,7 +440,6 @@ def get_prediction_for_data(model, data_iterator, criterion):
     """
     model.eval()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
-    samples_num = batches_num * data_iterator.batch_size
 
     test_true, test_predictions = [], []
     test_loss, test_correct = 0, 0
@@ -452,22 +451,24 @@ def get_prediction_for_data(model, data_iterator, criterion):
 
         test_true.append(true_labels), test_predictions.append(predicted_labels)
 
-        test_loss += float(criterion(model_outputs, true_labels)) * data_iterator.batch_size
-        test_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+        test_loss += float(criterion(model_outputs, true_labels))
+        test_correct += binary_accuracy(predicted_labels, true_labels)
 
-    return torch.cat(test_predictions), torch.cat(test_true), test_loss / samples_num, test_correct / samples_num
+    return torch.cat(test_predictions), torch.cat(test_true), test_loss / batches_num, test_correct / batches_num
 
 
-def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay, model_name):
+def train_test_and_plot(model, data_manager, n_epochs, lr, weight_decay, model_name):
+    print(f"# --------- MODEL: {model_name} --------- #")
+
     criterion = nn.BCEWithLogitsLoss()
 
     # training
-    performances = train_model(model,
-                               data_manager,
-                               criterion,
-                               n_epochs,
-                               lr,
-                               weight_decay)
+    performances = train_eval_model(model,
+                                    data_manager,
+                                    criterion,
+                                    n_epochs,
+                                    lr,
+                                    weight_decay)
     epochs = range(n_epochs)
     for metric_type, dataset_type_dict in performances.items():
         for dataset_type, values in dataset_type_dict.items():
@@ -477,6 +478,7 @@ def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay, model_name)
         plt.ylabel(metric_type)
         plt.legend()
         plt.show()
+        plt.savefig(f"outputs/{model_name}_{metric_type}")
 
     # predictions for the whole data
     test_iterator = data_manager.get_torch_iterator(TEST)
@@ -500,13 +502,13 @@ def train_log_linear_with_one_hot():
     """
     data_manager = DataManager(ONEHOT_AVERAGE, batch_size=BATCH_SIZE)
     model = LogLinear(embedding_dim=data_manager.get_input_shape()[0])
-    train_eval_plot(model,
-                    data_manager,
-                    N_EPOCHS,
-                    LEARNING_RATE,
-                    WEIGHT_DECAY,
-                    model_name="LogLinear with 1HOT"
-                    )
+    train_test_and_plot(model,
+                        data_manager,
+                        N_EPOCHS,
+                        LEARNING_RATE,
+                        WEIGHT_DECAY,
+                        model_name="LogLinear with 1HOT"
+                        )
 
 
 def train_log_linear_with_w2v():
@@ -515,29 +517,30 @@ def train_log_linear_with_w2v():
     representation.
     """
     data_manager = DataManager(W2V_AVERAGE, batch_size=BATCH_SIZE, embedding_dim=W2V_EMBEDDING_DIM)
-    model = LogLinear(embedding_dim=W2V_EMBEDDING_DIM)
-    train_eval_plot(model,
-                    data_manager,
-                    N_EPOCHS,
-                    LEARNING_RATE,
-                    WEIGHT_DECAY,
-                    model_name="LogLinear with w2v"
-                    )
+    model = LogLinear(embedding_dim=data_manager.get_input_shape()[0])
+    train_test_and_plot(model,
+                        data_manager,
+                        N_EPOCHS,
+                        LEARNING_RATE,
+                        WEIGHT_DECAY,
+                        model_name="LogLinear with w2v"
+                        )
 
 
 def train_lstm_with_w2v():
     """
     Here comes your code for training and evaluation of the LSTM model.
     """
-    data_manager = DataManager(W2V_SEQUENCE, batch_size=BATCH_SIZE, embedding_dim=W2V_EMBEDDING_DIM)
+    # data_manager = DataManager(W2V_SEQUENCE, batch_size=BATCH_SIZE, embedding_dim=W2V_EMBEDDING_DIM)
+    data_manager = load_pickle('data_manager.obj')
     model = LSTM(embedding_dim=W2V_EMBEDDING_DIM, hidden_dim=100, n_layers=1, dropout=.5)
-    train_eval_plot(model,
-                    data_manager,
-                    n_epochs=4,
-                    lr=0.001,
-                    weight_decay=0.0001,
-                    model_name="LSTM with w2v"
-                    )
+    train_test_and_plot(model,
+                        data_manager,
+                        n_epochs=4,
+                        lr=0.001,
+                        weight_decay=0.0001,
+                        model_name="LSTM with w2v"
+                        )
 
 
 if __name__ == '__main__':
