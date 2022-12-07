@@ -1,14 +1,11 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import os
-from torch.utils.data import DataLoader, TensorDataset, Dataset
-import operator
+from torch.utils.data import DataLoader, Dataset
 import data_loader
 import pickle
-import tqdm
 import matplotlib.pyplot as plt
 from itertools import islice
 
@@ -26,7 +23,7 @@ VAL = "val"
 TEST = "test"
 
 BATCH_SIZE = 64
-N_EPOCHS = 10
+N_EPOCHS = 20
 LEARNING_RATE = 0.01
 WEIGHT_DECAY = 0.0001
 
@@ -68,7 +65,7 @@ def save_model(model, path, epoch, optimizer):
 
 def load(model, path, optimizer):
     """
-    Loads the state (weights, paramters...) of a model which was saved with save_model
+    Loads the state (weights, parameters...) of a model which was saved with save_model
     :param model: should be the same model as the one which was saved in the path
     :param path: path to the saved checkpoint
     :param optimizer: should be the same optimizer as the one which was saved in the path
@@ -85,7 +82,7 @@ def load(model, path, optimizer):
 def load_word2vec():
     """ Load Word2Vec Vectors
         Return:
-            wv_from_bin: All 3 million embeddings, each lengh 300
+            wv_from_bin: All 3 million embeddings, each length 300
     """
     import gensim.downloader as api
     wv_from_bin = api.load("word2vec-google-news-300")
@@ -122,7 +119,7 @@ def get_w2v_average(sent, word_to_vec, embedding_dim):
     :param embedding_dim: the dimension of the word embedding vectors
     :return The average embedding vector as numpy ndarray.
     """
-    return torch.asarray([word_to_vec.get(word, torch.zeros(size=embedding_dim)) for word in sent.text]).mean(dim=0)
+    return np.asarray([word_to_vec.get(word, np.zeros(shape=(embedding_dim,))) for word in sent.text]).mean(axis=0)
 
 
 def get_one_hot(size, ind):
@@ -169,14 +166,14 @@ def sentence_to_embedding(sent, word_to_vec, seq_len, embedding_dim=300):
     :param embedding_dim: the dimension of the w2v embedding
     :return: numpy ndarray of shape (seq_len, embedding_dim) with the representation of the sentence
     """
-    words_vectors = []
-    for i in range(seq_len):
-        if i >= len(sent.text) or sent.text[i] not in word_to_vec:
-            words_vectors.append(torch.zeros(size=embedding_dim))
-        else:
-            words_vectors.append(word_to_vec[sent.text[i]])
+    words_vectors = np.zeros(shape=(seq_len, embedding_dim))
 
-    return torch.asarray(words_vectors).mean(dim=0)
+    for i in range(min(seq_len, len(sent.text))):
+
+        if sent.text[i] in word_to_vec:
+            words_vectors[i] = word_to_vec[sent.text[i]]
+
+    return words_vectors
 
 
 class OnlineDataset(Dataset):
@@ -204,7 +201,7 @@ class OnlineDataset(Dataset):
         return sent_emb, sent_label
 
 
-class DataManager():
+class DataManager:
     """
     Utility class for handling all data management task. Can be used to get iterators for training and
     evaluation.
@@ -234,7 +231,7 @@ class DataManager():
         self.sentences[VAL] = self.sentiment_dataset.get_validation_set()
         self.sentences[TEST] = self.sentiment_dataset.get_test_set()
 
-        # map data splits to sentence input preperation functions
+        # map data splits to sentence input preparation functions
         words_list = list(self.sentiment_dataset.get_word_counts().keys())
         if data_type == ONEHOT_AVERAGE:
             self.sent_func = average_one_hots
@@ -263,14 +260,14 @@ class DataManager():
     def get_torch_iterator(self, data_subset=TRAIN):
         """
         :param data_subset: one of TRAIN VAL and TEST
-        :return: torch batches iterator for this part of the datset
+        :return: torch batches iterator for this part of the dataset
         """
         return self.torch_iterators[data_subset]
 
     def get_labels(self, data_subset=TRAIN):
         """
         :param data_subset: one of TRAIN VAL and TEST
-        :return: numpy array with the labels of the requested part of the datset in the same order of the
+        :return: numpy array with the labels of the requested part of the dataset in the same order of the
         examples.
         """
         return np.array([sent.sentiment_class for sent in self.sentences[data_subset]])
@@ -297,7 +294,6 @@ class LSTM(nn.Module):
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, n_layers, batch_first=True, bidirectional=True, dropout=dropout)
         self.linear_layer = nn.Linear(hidden_dim * 2, 1)
         self.sigmoid = nn.Sigmoid()
-        # TODO understand why?
 
     def forward(self, text):
         lstm_out, _ = self.lstm(text)
@@ -314,8 +310,8 @@ class LogLinear(nn.Module):
 
     def __init__(self, embedding_dim):
         super(LogLinear, self).__init__()
-        self.linear = torch.nn.Linear(embedding_dim, 1)
-        self.sigmoid = torch.nn.Sigmoid()
+        self.linear = nn.Linear(embedding_dim, 1)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         return self.linear(x)
@@ -331,6 +327,7 @@ def binary_accuracy(preds, y, normalized=True):
     You can choose whether to use numpy arrays or tensors here.
     :param preds: a vector of predictions
     :param y: a vector of true labels
+    :param normalized: if true return accuracy normalized
     :return: scalar value - (<number of accurate predictions> / <number of examples>)
     """
     return int(torch.sum(torch.round(preds) == y)) / (y.shape[0] if normalized else 1)
@@ -345,7 +342,6 @@ def train_epoch(model, data_iterator, optimizer, criterion):
     :param optimizer: the optimizer object for the training process.
     :param criterion: the criterion object for the training process.
     """
-    # init
     model.train()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
     samples_num = batches_num * data_iterator.batch_size
@@ -357,9 +353,9 @@ def train_epoch(model, data_iterator, optimizer, criterion):
 
         model_outputs = model(inputs.type(torch.FloatTensor))
         predicted_labels = model.predict(inputs.type(torch.FloatTensor))
-        true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)  # TODO check for reshape
+        true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)
 
-        loss = criterion(model_outputs, true_labels)
+        loss = criterion(model_outputs, true_labels) * data_iterator.batch_size
         loss.backward()
         optimizer.step()
 
@@ -369,30 +365,29 @@ def train_epoch(model, data_iterator, optimizer, criterion):
     return train_loss / samples_num, train_correct / samples_num
 
 
+@torch.no_grad()
 def evaluate(model, data_iterator, criterion):
     """
     evaluate the model performance on the given data
-    :param model: one of our models..
+    :param model: one of our models.
     :param data_iterator: torch data iterator for the relevant subset
     :param criterion: the loss criterion used for evaluation
     :return: tuple of (average loss over all examples, average accuracy over all examples)
     """
-    # init
     model.eval()
     batches_num = int(len(data_iterator.dataset) / data_iterator.batch_size)
     samples_num = batches_num * data_iterator.batch_size
 
     validate_loss, validate_correct = 0, 0
 
-    with torch.no_grad():  # reduce memory consumption
-        for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
-            model_outputs = model(inputs.type(torch.FloatTensor))
-            predicted_labels = model.predict(inputs.type(torch.FloatTensor))
-            true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor) # TODO check for reshape
+    for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
+        model_outputs = model(inputs.type(torch.FloatTensor))
+        predicted_labels = model.predict(inputs.type(torch.FloatTensor))
+        true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)
 
-            loss = criterion(model_outputs, true_labels)
-            validate_loss += float(loss)
-            validate_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+        loss = criterion(model_outputs, true_labels) * data_iterator.batch_size
+        validate_loss += float(loss)
+        validate_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
 
     return validate_loss / samples_num, validate_correct / samples_num
 
@@ -400,9 +395,10 @@ def evaluate(model, data_iterator, criterion):
 def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
     """
     Runs the full training procedure for the given model. The optimization should be done using the Adam
-    optimizer with all parameters but learning rate and weight decay set to default.
+    optimizer with all parameters but learning rate and weight decay set to default
     :param model: module of one of the models implemented in the exercise
     :param data_manager: the DataManager object
+    :param criterion: the loss function
     :param n_epochs: number of times to go over the whole training set
     :param lr: learning rate to be used for optimization
     :param weight_decay: parameter for l2 regularization
@@ -426,16 +422,20 @@ def train_model(model, data_manager, criterion, n_epochs, lr, weight_decay=0.):
         loss, accuracy = evaluate(model, validation_iterator, criterion)
         v_loss.append(loss), v_acc.append(accuracy)
 
+    print(f"# --------- Finished {n_epochs}/{n_epochs} epochs! --------- #")
+
     return {"loss": {"training": t_loss, "validation": v_loss}, "accuracy": {"training": t_acc, "validation": v_acc}}
 
 
+@torch.no_grad()
 def get_prediction_for_data(model, data_iterator, criterion):
     """
-    This function should iterate over all batches of examples from data_iter and return all of the models
+    This function should iterate over all batches of examples from data_iter and return all the models
     predictions as a numpy ndarray or torch tensor (or list if you prefer). the prediction should be in the
     same order of the examples returned by data_iter.
     :param model: one of the models you implemented in the exercise
     :param data_iterator: torch iterator as given by the DataManager
+    :param criterion: the loss function
     :return:
     """
     model.eval()
@@ -445,21 +445,20 @@ def get_prediction_for_data(model, data_iterator, criterion):
     test_true, test_predictions = [], []
     test_loss, test_correct = 0, 0
 
-    with torch.no_grad():  # reduce memory consumption
-        for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
-            model_outputs = model(inputs.type(torch.FloatTensor))
-            predicted_labels = model.predict(inputs.type(torch.FloatTensor))
-            true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor) # TODO check for reshape
+    for _, (inputs, labels) in islice(enumerate(data_iterator), batches_num):
+        model_outputs = model(inputs.type(torch.FloatTensor))
+        predicted_labels = model.predict(inputs.type(torch.FloatTensor))
+        true_labels = labels.reshape(data_iterator.batch_size, 1).type(torch.FloatTensor)
 
-            test_true.append(true_labels), test_predictions.append(predicted_labels)
+        test_true.append(true_labels), test_predictions.append(predicted_labels)
 
-            test_loss += float(criterion(model_outputs, true_labels))
-            test_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
+        test_loss += float(criterion(model_outputs, true_labels)) * data_iterator.batch_size
+        test_correct += binary_accuracy(predicted_labels, true_labels, normalized=False)
 
     return torch.cat(test_predictions), torch.cat(test_true), test_loss / samples_num, test_correct / samples_num
 
 
-def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay):
+def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay, model_name):
     criterion = nn.BCEWithLogitsLoss()
 
     # training
@@ -473,7 +472,7 @@ def train_eval_plot(model, data_manager, n_epochs, lr, weight_decay):
     for metric_type, dataset_type_dict in performances.items():
         for dataset_type, values in dataset_type_dict.items():
             plt.plot(epochs, values, label=dataset_type)
-        plt.title(f'{metric_type} over training/validation')
+        plt.title(f'{model_name} - {metric_type} over training/validation')
         plt.xlabel('Epochs')
         plt.ylabel(metric_type)
         plt.legend()
@@ -505,7 +504,8 @@ def train_log_linear_with_one_hot():
                     data_manager,
                     N_EPOCHS,
                     LEARNING_RATE,
-                    WEIGHT_DECAY
+                    WEIGHT_DECAY,
+                    model_name="LogLinear with 1HOT"
                     )
 
 
@@ -520,7 +520,8 @@ def train_log_linear_with_w2v():
                     data_manager,
                     N_EPOCHS,
                     LEARNING_RATE,
-                    WEIGHT_DECAY
+                    WEIGHT_DECAY,
+                    model_name="LogLinear with w2v"
                     )
 
 
@@ -534,11 +535,12 @@ def train_lstm_with_w2v():
                     data_manager,
                     n_epochs=4,
                     lr=0.001,
-                    weight_decay=0.0001
+                    weight_decay=0.0001,
+                    model_name="LSTM with w2v"
                     )
 
 
 if __name__ == '__main__':
     train_log_linear_with_one_hot()
-    # train_log_linear_with_w2v()
-    # train_lstm_with_w2v()
+    train_log_linear_with_w2v()
+    train_lstm_with_w2v()
