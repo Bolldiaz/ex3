@@ -4,6 +4,6 @@ Authors:
 
 Files:
     - README - this file
-    - ex3.pdf - answers for the theoretical part
+    - results.pdf - answers for the theoretical part
     - exercise_blanks.py - computes answers for the practical part
     - data_loader.py - reading the datasets to work on
